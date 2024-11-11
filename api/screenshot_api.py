@@ -1,8 +1,9 @@
-from flask import Flask, send_file, jsonify, request
+from flask import Flask, send_file, jsonify, request, Response
 import subprocess
 import os
 import time
 import logging
+import io
 from datetime import datetime
 from pathlib import Path
 from selenium import webdriver
@@ -40,7 +41,7 @@ def get_chrome_options():
     chrome_options.binary_location = '/usr/bin/chromium'
     return chrome_options
 
-def take_screenshot(url):
+def take_screenshot(url, save_file=False):
     """Take a screenshot using Chrome headless"""
     logger.debug(f"Taking screenshot of {url}")
     
@@ -64,23 +65,23 @@ def take_screenshot(url):
         # Additional wait for dynamic content
         time.sleep(2)
         
-        # Ensure screenshot directory exists
-        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+        # Get screenshot as PNG bytes
+        png_data = driver.get_screenshot_as_png()
         
-        # Take screenshot
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'screenshot_{timestamp}.png'
-        filepath = os.path.join(SCREENSHOT_DIR, filename)
+        if save_file:
+            # Ensure screenshot directory exists
+            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+            
+            # Save screenshot
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'screenshot_{timestamp}.png'
+            filepath = os.path.join(SCREENSHOT_DIR, filename)
+            
+            logger.debug(f"Saving screenshot to {filepath}")
+            with open(filepath, 'wb') as f:
+                f.write(png_data)
         
-        logger.debug(f"Saving screenshot to {filepath}")
-        driver.save_screenshot(filepath)
-        
-        if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-            logger.debug(f"Screenshot saved successfully. Size: {os.path.getsize(filepath)} bytes")
-            return filepath
-        else:
-            logger.error("Screenshot file not found or empty")
-            return None
+        return png_data
             
     except Exception as e:
         logger.error(f"Screenshot error: {str(e)}", exc_info=True)
@@ -102,17 +103,6 @@ def status():
     """Check if the API and VM are ready"""
     logger.debug("Status check received")
     try:
-        # Check if screenshots directory exists and is writable
-        screenshots_dir = Path(SCREENSHOT_DIR)
-        if not screenshots_dir.exists():
-            screenshots_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not os.access(SCREENSHOT_DIR, os.W_OK):
-            return jsonify({
-                "status": "error",
-                "message": f"Screenshot directory {SCREENSHOT_DIR} is not writable"
-            }), 500
-        
         response = jsonify({
             "status": "ready",
             "message": "API is running",
@@ -131,11 +121,13 @@ def status():
 
 @app.route('/screenshot', methods=['POST'])
 def screenshot():
-    """Take a screenshot of the provided URL"""
+    """Take a screenshot of the provided URL and return as PNG"""
     if not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 400
         
     url = request.json.get('url')
+    save_file = request.json.get('save_file', False)  # Optional parameter to save file
+    
     if not url:
         return jsonify({"error": "URL is required"}), 400
         
@@ -144,24 +136,22 @@ def screenshot():
         
     logger.info(f"Screenshot requested for URL: {url}")
     
-    # Ensure screenshot directory exists
-    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    png_data = take_screenshot(url, save_file)
     
-    screenshot_path = take_screenshot(url)
-    
-    if not screenshot_path:
+    if not png_data:
         return jsonify({
             "error": "Failed to take screenshot",
             "details": "The screenshot process failed"
         }), 500
         
     try:
-        logger.debug(f"Sending screenshot: {screenshot_path}")
-        return send_file(
-            screenshot_path,
+        return Response(
+            png_data,
             mimetype='image/png',
-            as_attachment=True,
-            download_name=os.path.basename(screenshot_path)
+            headers={
+                'Content-Disposition': 'inline',
+                'Access-Control-Allow-Origin': '*'
+            }
         )
     except Exception as e:
         logger.error(f"Error sending file: {str(e)}", exc_info=True)
@@ -172,9 +162,6 @@ def screenshot():
 
 if __name__ == '__main__':
     logger.info("Starting API server...")
-    # Ensure screenshots directory exists and is writable
-    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-    os.chmod(SCREENSHOT_DIR, 0o777)  # Make sure directory is writable
     
     # Configure Flask app
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
