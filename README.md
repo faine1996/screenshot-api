@@ -75,6 +75,3 @@ To check service status:
 ```bash
 docker exec screenshot-service-screenshot-service-1 /vm/api/monitor.sh
 ```
-
-## License
-[Your chosen license]
